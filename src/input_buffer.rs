@@ -29,7 +29,7 @@ impl InputBuffer {
 
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
-        self.buffer = input;
+        self.buffer = input.to_ascii_lowercase();
         self.buffer_length = self.buffer.len();
         self.input_length = self.buffer.trim_end().len();
         Ok(())

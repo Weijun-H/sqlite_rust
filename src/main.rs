@@ -1,4 +1,7 @@
 use sqlite_rust::input_buffer::InputBuffer;
+use sqlite_rust::meta_command::do_meta_command;
+use sqlite_rust::meta_command::parse_statement;
+use sqlite_rust::meta_command::MetaCommandResult;
 use sqlite_rust::{Error, Result};
 
 fn main() -> Result<()> {
@@ -7,10 +10,29 @@ fn main() -> Result<()> {
     while true {
         buffer.print_prompt();
         buffer.read_input()?;
-        if buffer.get_buffer() == ".exit" {
-            break;
-        } else {
-            println!("Unrecognized command '{}'", buffer.get_buffer());
+        if buffer.get_buffer().starts_with(".") {
+            match do_meta_command(&mut buffer) {
+                Ok(MetaCommandResult::MetaCommandSuccess) => {
+                    continue;
+                }
+                Ok(MetaCommandResult::MetaCommandUnrecognizedCommand) => {
+                    println!("Unrecognized command '{}'", buffer.get_buffer());
+                    continue;
+                }
+                Err(e) => {
+                    return Err(e);
+                }
+            }
+        }
+
+        match parse_statement(&mut buffer) {
+            Ok(statement) => {
+                statement.execute()?;
+            }
+            Err(e) => {
+                println!("Error preparing statement: {}", e);
+                continue;
+            }
         }
     }
     Ok(())
