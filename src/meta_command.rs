@@ -87,3 +87,50 @@ pub fn execute_statement(statement: &Statement, table: &mut Table) -> Result<Exe
         }
     }
 }
+
+pub fn execute_query(buffer: &mut InputBuffer, table: &mut Table) -> Result<()> {
+    buffer.print_prompt();
+    buffer.read_input()?;
+    if buffer.get_buffer().starts_with(".") {
+        match do_meta_command(buffer) {
+            Ok(MetaCommandResult::MetaCommandSuccess) => {
+                return Ok(());
+            }
+            Ok(MetaCommandResult::MetaCommandUnrecognizedCommand) => {
+                return Err("Unrecognized command {buffer.get_buffer()}".into());
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        }
+    }
+
+    match parse_statement(buffer) {
+        Ok(statement) => {
+            execute_statement(&statement, table);
+            Ok(())
+        }
+        Err(e) => {
+            return Err(e);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    #[test]
+    fn test_query() {
+        let query = "insert 1 user1 email1";
+        let mut buffer = InputBuffer::from_str(query).unwrap();
+        let mut table = Table::new();
+        execute_query(&mut buffer, &mut table).unwrap();
+        let query = "select";
+        let mut buffer = InputBuffer::from_str(query).unwrap();
+        execute_query(&mut buffer, &mut table).unwrap();
+
+    }
+}
