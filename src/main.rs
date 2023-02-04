@@ -1,11 +1,13 @@
 use sqlite_rust::input_buffer::InputBuffer;
 use sqlite_rust::meta_command::do_meta_command;
+use sqlite_rust::meta_command::execute_statement;
 use sqlite_rust::meta_command::parse_statement;
 use sqlite_rust::meta_command::MetaCommandResult;
 use sqlite_rust::{Error, Result};
 
 fn main() -> Result<()> {
     let mut buffer = InputBuffer::new();
+    let mut table = sqlite_rust::page::Table::new();
     welcome_message();
     while true {
         buffer.print_prompt();
@@ -27,7 +29,7 @@ fn main() -> Result<()> {
 
         match parse_statement(&mut buffer) {
             Ok(statement) => {
-                statement.execute()?;
+                execute_statement(&statement, &mut table)?;
             }
             Err(e) => {
                 println!("Error preparing statement: {}", e);
