@@ -1,10 +1,13 @@
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::mem::size_of;
+use std::process::Command;
 
+use crate::meta_command::CommandError;
 use crate::meta_command::ExecuteResult;
 use crate::meta_command::Statement;
-use crate::{Error, Result};
+
+type Result<T> = std::result::Result<T, CommandError>;
 
 pub const COLUMN_USERNAME_SIZE: usize = 32;
 pub const COLUMN_EMAIL_SIZE: usize = 255;
@@ -125,10 +128,9 @@ impl Table {
         self.num_rows
     }
 
-    pub fn insert(&mut self, statement: &Statement) -> Result<ExecuteResult> {
+    pub fn insert(&mut self, statement: &Statement) -> Result<()> {
         if self.num_rows >= TABLE_MAX_ROWS {
-            return Err("Table full".into());
-            // Err(ExecuteResult::ExecuteTableFull)
+            return Err(CommandError::ExecuteTableFull);
         }
         let (page_num, row_offset) = self.row_slot(self.num_rows);
         self.pages[page_num].as_mut().unwrap()[row_offset] = statement.get_row_to_insert();
@@ -137,15 +139,15 @@ impl Table {
             "insert successfully {}",
             self.pages[page_num].unwrap()[row_offset].unwrap()
         );
-        Ok(ExecuteResult::ExecuteSuccess)
+        Ok(())
     }
 
-    pub fn select(&mut self, statement: &Statement) -> Result<ExecuteResult> {
+    pub fn select(&mut self, statement: &Statement) -> Result<()> {
         for i in 0..self.num_rows {
             let (page_num, row_offset) = self.row_slot(i);
             let row = self.pages[page_num].unwrap()[row_offset].unwrap();
             println!("{}", row);
         }
-        Ok(ExecuteResult::ExecuteSuccess)
+        Ok(())
     }
 }

@@ -8,7 +8,10 @@ fn main() -> Result<()> {
     welcome_message();
     while true {
         let mut buffer = InputBuffer::new();
-        execute_query(&mut buffer, & mut table);
+        match execute_query(&mut buffer, &mut table) {
+            Ok(_) => {}
+            Err(e) => println!("{}", e),
+        }
     }
     Ok(())
 }
@@ -24,7 +27,6 @@ fn welcome_message() {
     println!(r"                                                                 ");
     println!(r"                                                                 ");
 }
-
 
 #[cfg(test)]
 mod tests {

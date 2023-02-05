@@ -1,23 +1,43 @@
 use std::default;
+use std::fmt;
 use std::process::Command;
 
 use crate::input_buffer::InputBuffer;
 use crate::page::{Row, Table, COLUMN_EMAIL_SIZE, COLUMN_USERNAME_SIZE};
-use crate::{Error, Result};
 use scan_fmt::scan_fmt;
 
-pub enum ExecuteResult {
-    ExecuteSuccess,
+type Result<T> = std::result::Result<T, CommandError>;
+
+#[derive(Debug)]
+pub enum CommandError {
+    // PrepareSuccess,
+    PrepareSyntaxError,
+    PrepareStringTooLong,
+    PrepareNegativeId,
+    PrepareUnrecognizedStatement,
     ExecuteTableFull,
+    MetaCommandUnrecognizedCommand,
+    BufferInputError,
 }
 
-pub enum MetaCommandResult {
-    MetaCommandSuccess,
-    MetaCommandUnrecognizedCommand,
-}
-pub enum PrepareResult {
-    PrepareSuccess,
-    PrepareUnrecognizedStatement,
+impl fmt::Display for CommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CommandError::PrepareSyntaxError => {
+                write!(f, "Syntax error. Could not parse statement.")
+            }
+            CommandError::PrepareStringTooLong => write!(f, "String is too long."),
+            CommandError::PrepareNegativeId => write!(f, "ID must be positive."),
+            CommandError::PrepareUnrecognizedStatement => {
+                write!(f, "Unrecognized keyword at start of '{}'.", "statement")
+            }
+            CommandError::ExecuteTableFull => write!(f, "Error: Table full."),
+            CommandError::MetaCommandUnrecognizedCommand => {
+                write!(f, "Unrecognized command '{}'.", "command")
+            }
+            CommandError::BufferInputError => write!(f, "Error reading input."),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -48,11 +68,11 @@ impl Statement {
     }
 }
 
-pub fn do_meta_command(input_buffer: &mut InputBuffer) -> Result<MetaCommandResult> {
+pub fn do_meta_command(input_buffer: &mut InputBuffer) -> Result<()> {
     if input_buffer.get_buffer() == ".exit" {
         std::process::exit(0);
     } else {
-        Ok(MetaCommandResult::MetaCommandUnrecognizedCommand)
+        Err(CommandError::MetaCommandUnrecognizedCommand)
     }
 }
 
@@ -61,48 +81,50 @@ pub fn parse_statement(buffer: &mut InputBuffer) -> Result<Statement> {
     let mut username_tmp = [0; COLUMN_USERNAME_SIZE];
     let mut email_tmp = [0; COLUMN_EMAIL_SIZE];
     if command.starts_with("insert") {
-        let (id, username, email) = scan_fmt!(command, "insert {} {} {}", u32, String, String)?;
-        username_tmp[..username.len()].copy_from_slice(username.as_bytes());
-        email_tmp[..email.len()].copy_from_slice(email.as_bytes());
-        Ok(Statement {
-            statement_type: StatementType::StatementInsert,
-            row_to_insert: Some(Row::new(id, username_tmp, email_tmp)),
-        })
+        let scan = scan_fmt!(command, "insert {} {} {}", u32, String, String);
+        match scan {
+            Ok((id, username, email)) => {
+                if id < 0 {
+                    return Err(CommandError::PrepareNegativeId);
+                }
+                if username.len() > COLUMN_USERNAME_SIZE || email.len() > COLUMN_EMAIL_SIZE {
+                    return Err(CommandError::PrepareStringTooLong);
+                }
+                username_tmp[..username.len()].copy_from_slice(username.as_bytes());
+                email_tmp[..email.len()].copy_from_slice(email.as_bytes());
+                Ok(Statement {
+                    statement_type: StatementType::StatementInsert,
+                    row_to_insert: Some(Row::new(id, username_tmp, email_tmp)),
+                })
+            }
+            Err(_) => Err(CommandError::PrepareSyntaxError),
+        }
     } else if buffer.get_buffer().starts_with("select") {
         Ok(Statement {
             statement_type: StatementType::StatementSelect,
             row_to_insert: None,
         })
     } else {
-        Err("Could not parse statement".into())
+        Err(CommandError::PrepareUnrecognizedStatement)
     }
 }
 
-pub fn execute_statement(statement: &Statement, table: &mut Table) -> Result<ExecuteResult> {
+pub fn execute_statement(statement: &Statement, table: &mut Table) -> Result<()> {
     match statement.get_statement_type() {
         StatementType::StatementInsert => table.insert(statement),
-        StatementType::StatementSelect => {
-            table.select(&statement);
-            Ok(ExecuteResult::ExecuteSuccess)
-        }
+        StatementType::StatementSelect => table.select(&statement),
     }
 }
 
 pub fn execute_query(buffer: &mut InputBuffer, table: &mut Table) -> Result<()> {
     buffer.print_prompt();
-    buffer.read_input()?;
+
+    match buffer.read_input() {
+        Ok(_) => {}
+        Err(_) => return Err(CommandError::BufferInputError),
+    }
     if buffer.get_buffer().starts_with(".") {
-        match do_meta_command(buffer) {
-            Ok(MetaCommandResult::MetaCommandSuccess) => {
-                return Ok(());
-            }
-            Ok(MetaCommandResult::MetaCommandUnrecognizedCommand) => {
-                return Err("Unrecognized command {buffer.get_buffer()}".into());
-            }
-            Err(e) => {
-                return Err(e);
-            }
-        }
+        return do_meta_command(buffer);
     }
 
     match parse_statement(buffer) {
@@ -123,14 +145,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_query() {
-        let query = "insert 1 user1 email1";
-        let mut buffer = InputBuffer::from_str(query).unwrap();
+    fn test_query_setup() {
+        let query_list = ["insert 1 user1 email1", "select", ".exit"];
         let mut table = Table::new();
-        execute_query(&mut buffer, &mut table).unwrap();
-        let query = "select";
-        let mut buffer = InputBuffer::from_str(query).unwrap();
-        execute_query(&mut buffer, &mut table).unwrap();
+        for query in query_list.iter() {
+            let mut buffer = InputBuffer::from_str(query).unwrap();
+            execute_query(&mut buffer, &mut table).unwrap();
+        }
+    }
 
+    #[test]
+    fn test_query_insert() {
+        let mut table = Table::new();
+        for i in 1..1000 {
+            let query = format!("insert {} user{} email{}", i, i, i);
+            let mut buffer = InputBuffer::from_str(query.as_str()).unwrap();
+            execute_query(&mut buffer, &mut table).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_query_insert_maximum() {
+        let long_username = "a".repeat(COLUMN_USERNAME_SIZE + 1);
+        let long_email = "a".repeat(COLUMN_EMAIL_SIZE + 1);
+        let query = format!(
+            "insert {} {} {}",
+            1,
+            long_username.as_str(),
+            long_email.as_str()
+        );
+        let mut buffer = InputBuffer::from_str(query.as_str()).unwrap();
+        let mut table = Table::new();
+        execute_query(&mut buffer, &mut table);
     }
 }
