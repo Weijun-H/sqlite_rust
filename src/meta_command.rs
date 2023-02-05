@@ -1,6 +1,4 @@
-use std::default;
 use std::fmt;
-use std::process::Command;
 
 use crate::input_buffer::InputBuffer;
 use crate::page::{Row, Table, COLUMN_EMAIL_SIZE, COLUMN_USERNAME_SIZE};
@@ -68,8 +66,9 @@ impl Statement {
     }
 }
 
-pub fn do_meta_command(input_buffer: &mut InputBuffer) -> Result<()> {
+pub fn do_meta_command(input_buffer: &mut InputBuffer, table: &mut Table) -> Result<()> {
     if input_buffer.get_buffer() == ".exit" {
+        table.db_close();
         std::process::exit(0);
     } else {
         Err(CommandError::MetaCommandUnrecognizedCommand)
@@ -124,7 +123,7 @@ pub fn execute_query(buffer: &mut InputBuffer, table: &mut Table) -> Result<()> 
         Err(_) => return Err(CommandError::BufferInputError),
     }
     if buffer.get_buffer().starts_with(".") {
-        return do_meta_command(buffer);
+        return do_meta_command(buffer, table);
     }
 
     match parse_statement(buffer) {

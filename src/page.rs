@@ -1,10 +1,11 @@
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::io::{Read, Write};
 use std::mem::size_of;
-use std::process::Command;
+use std::fs::OpenOptions;
+
 
 use crate::meta_command::CommandError;
-use crate::meta_command::ExecuteResult;
 use crate::meta_command::Statement;
 
 type Result<T> = std::result::Result<T, CommandError>;
@@ -100,27 +101,128 @@ impl Display for Row {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug)]
+struct Pager {
+    file: std::fs::File,
+    file_length: usize,
+    pages: [Option<[u8; PAGE_SIZE]>; TABLE_MAX_PAGES],
+}
+
+impl Pager {
+    pub fn new() -> Self {
+        Self {
+            file: std::fs::File::create("db").unwrap(),
+            file_length: 0,
+            pages: [None; TABLE_MAX_PAGES],
+        }
+    }
+    pub fn open(file_path: &str) -> Self {
+        // let path = std::path::Path::new(file_path);
+        
+        let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(file_path).unwrap();
+        // TODO: handle file not found
+        // let mut file = std::fs::File::open(path).unwrap();
+        let file_length = file.metadata().unwrap().len() as usize;
+        let mut num_pages = file_length / PAGE_SIZE;
+        if file_length % PAGE_SIZE > 0 {
+            num_pages += 1;
+        }
+        let mut pages = [None; TABLE_MAX_PAGES];
+        for i in 0..num_pages {
+            let mut buffer = [0; PAGE_SIZE];
+            file.read(&mut buffer).unwrap();
+            pages[i] = Some(buffer);
+        }
+        Self {
+            file,
+            file_length,
+            pages,
+        }
+    }
+
+    pub fn get_file_length(&self) -> usize {
+        self.file_length
+    }
+
+    pub fn get_page(&mut self, page_num: usize) -> Option<&[u8; PAGE_SIZE]> {
+        // TODO: handle page_num out of bounds
+        if page_num > TABLE_MAX_PAGES {
+            panic!(
+                "Tried to fetch page number out of bounds. Max page number: {}, got {}",
+                TABLE_MAX_PAGES, page_num
+            );
+        }
+        match self.pages[page_num] {
+            Some(_) => (),
+            None => {
+                let mut buffer = [0; PAGE_SIZE];
+                // self.file.read(&mut buffer).unwrap()?;
+                self.pages[page_num] = Some(buffer);
+            }
+        }
+        self.pages[page_num].as_ref()
+    }
+
+    pub fn flush(&mut self, page_num: usize, row_num: usize) {
+        let offset:u64 = page_num as u64 * PAGE_SIZE as u64 + row_num as u64 * ROW_SIZE as u64;
+        self.file
+            .set_len(offset);
+        let num_full_pages = row_num / ROWS_PER_PAGE;
+        let row_offset = row_num % ROWS_PER_PAGE;
+        let buffer = self.get_row(page_num, row_num).serialize();
+        self.file.write(buffer.as_ref());
+    }
+
+    fn page_to_bytes(&self, page_num: usize) -> &[u8; PAGE_SIZE] {
+        self.pages[page_num].as_ref().unwrap()
+    }
+
+    pub fn get_row(&self, page_num: usize, row_num: usize) -> Row {
+        let page = self.page_to_bytes(page_num);
+        let offset = row_num * ROW_SIZE;
+        let row = &page[offset..offset + ROW_SIZE];
+        Row::deserialize(row)
+    }
+
+    pub fn set_row(&mut self, page_num: usize, row_num: usize, row: Option<Row>) {
+        let page = self.pages[page_num].as_mut().unwrap();
+        let offset = row_num * ROW_SIZE;
+        if let Some(row) = row {
+            page[offset..offset + ROW_SIZE].copy_from_slice(&row.serialize());
+        } else {
+            page[offset..offset + ROW_SIZE].fill(0);
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Table {
-    pages: [Option<[Option<Row>; ROWS_PER_PAGE]>; TABLE_MAX_PAGES],
+    pager: Pager,
     num_rows: usize,
 }
 
 impl Table {
     pub fn new() -> Self {
         Self {
-            pages: [None; TABLE_MAX_PAGES],
+            pager: Pager::new(),
             num_rows: 0,
         }
+    }
+
+    pub fn new_from_file(path: &str) -> Self {
+        let pager = Pager::open(path);
+        let num_rows = pager.get_file_length() / ROW_SIZE;
+        Self { pager, num_rows }
     }
 
     pub fn row_slot(&mut self, row_num: usize) -> (usize, usize) {
         let page_num = row_num / ROWS_PER_PAGE;
         let row_offset = row_num % ROWS_PER_PAGE;
-        match self.pages[page_num] {
-            Some(_) => (),
-            None => self.pages[page_num] = Some([None; ROWS_PER_PAGE]),
-        }
+        self.pager.get_page(page_num);
         (page_num, row_offset)
     }
 
@@ -133,11 +235,11 @@ impl Table {
             return Err(CommandError::ExecuteTableFull);
         }
         let (page_num, row_offset) = self.row_slot(self.num_rows);
-        self.pages[page_num].as_mut().unwrap()[row_offset] = statement.get_row_to_insert();
+        self.pager.set_row(page_num, row_offset, statement.get_row_to_insert());
         self.num_rows += 1;
         println!(
             "insert successfully {}",
-            self.pages[page_num].unwrap()[row_offset].unwrap()
+            self.pager.get_row(page_num, row_offset)
         );
         Ok(())
     }
@@ -145,9 +247,16 @@ impl Table {
     pub fn select(&mut self, statement: &Statement) -> Result<()> {
         for i in 0..self.num_rows {
             let (page_num, row_offset) = self.row_slot(i);
-            let row = self.pages[page_num].unwrap()[row_offset].unwrap();
+            let row = self.pager.get_row(page_num, row_offset);
             println!("{}", row);
         }
         Ok(())
+    }
+
+    pub fn db_close(&mut self) {
+        for i in 0..self.num_rows {
+            let (page_num, row_offset) = self.row_slot(i);
+            self.pager.flush(page_num, row_offset);
+        }
     }
 }

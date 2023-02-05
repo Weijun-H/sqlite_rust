@@ -3,9 +3,15 @@ use sqlite_rust::meta_command::execute_query;
 use sqlite_rust::page::Table;
 use sqlite_rust::{Error, Result};
 
+use std::env;
+
 fn main() -> Result<()> {
-    let mut table = Table::new();
     welcome_message();
+
+    // let args: Vec<String> = env::args().collect();
+    let file_name = "db";
+    let mut table = Table::new_from_file(file_name);
+
     while true {
         let mut buffer = InputBuffer::new();
         match execute_query(&mut buffer, &mut table) {
