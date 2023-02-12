@@ -1,9 +1,8 @@
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::mem::size_of;
-use std::fs::OpenOptions;
-
 
 use crate::meta_command::CommandError;
 use crate::meta_command::Statement;
@@ -26,6 +25,61 @@ const PAGE_SIZE: usize = 4096;
 const TABLE_MAX_PAGES: usize = 100;
 const ROWS_PER_PAGE: usize = PAGE_SIZE / ROW_SIZE;
 const TABLE_MAX_ROWS: usize = ROWS_PER_PAGE * TABLE_MAX_PAGES;
+
+#[derive(Debug)]
+pub struct Cursor<'a> {
+    table: &'a mut Table,
+    row_num: usize,
+    end_of_table: bool,
+}
+
+impl<'a> Cursor<'a> {
+    pub fn table_start(table: &'a mut Table) -> Self {
+        let end_of_table = table.num_rows() == 0;
+        Self {
+            table,
+            row_num: 0,
+            end_of_table,
+        }
+    }
+
+    pub fn table_end(table: &'a mut Table) -> Self {
+        let row_num = table.num_rows();
+        Self {
+            table,
+            row_num,
+            end_of_table: true,
+        }
+    }
+
+    pub fn cursor_value(&mut self) -> (usize, usize) {
+        let row_num = self.row_num;
+        let page_num = row_num / ROWS_PER_PAGE;
+        self.table.pager.get_page(page_num);
+        let row_offset = row_num % ROWS_PER_PAGE;
+        (page_num, row_offset)
+    }
+
+    pub fn cursor_advance(&mut self) {
+        self.row_num += 1;
+        if self.row_num >= self.table.num_rows() {
+            self.end_of_table = true;
+        }
+    }
+
+    pub fn is_end_of_table(&self) -> bool {
+        self.end_of_table
+    }
+
+    pub fn get_row(&mut self, page_num: usize, row_num: usize) -> Result<Row> {
+        let row = self.table.pager.get_row(page_num, row_num);
+        Ok(row)
+    }
+
+    pub fn flush(&mut self, page_num: usize, row_num: usize) {
+        self.table.pager.flush(page_num, row_num);
+    }
+}
 
 #[derive(Debug, Copy, Clone)]
 pub struct Row {
@@ -117,15 +171,13 @@ impl Pager {
         }
     }
     pub fn open(file_path: &str) -> Self {
-        // let path = std::path::Path::new(file_path);
-        
         let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open(file_path).unwrap();
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(file_path)
+            .unwrap();
         // TODO: handle file not found
-        // let mut file = std::fs::File::open(path).unwrap();
         let file_length = file.metadata().unwrap().len() as usize;
         let mut num_pages = file_length / PAGE_SIZE;
         if file_length % PAGE_SIZE > 0 {
@@ -160,7 +212,6 @@ impl Pager {
             Some(_) => (),
             None => {
                 let mut buffer = [0; PAGE_SIZE];
-                // self.file.read(&mut buffer).unwrap()?;
                 self.pages[page_num] = Some(buffer);
             }
         }
@@ -168,9 +219,8 @@ impl Pager {
     }
 
     pub fn flush(&mut self, page_num: usize, row_num: usize) {
-        let offset:u64 = page_num as u64 * PAGE_SIZE as u64 + row_num as u64 * ROW_SIZE as u64;
-        self.file
-            .set_len(offset);
+        let offset: u64 = page_num as u64 * PAGE_SIZE as u64 + row_num as u64 * ROW_SIZE as u64;
+        self.file.set_len(offset);
         let num_full_pages = row_num / ROWS_PER_PAGE;
         let row_offset = row_num % ROWS_PER_PAGE;
         let buffer = self.get_row(page_num, row_num).serialize();
@@ -219,12 +269,6 @@ impl Table {
         Self { pager, num_rows }
     }
 
-    pub fn row_slot(&mut self, row_num: usize) -> (usize, usize) {
-        let page_num = row_num / ROWS_PER_PAGE;
-        let row_offset = row_num % ROWS_PER_PAGE;
-        self.pager.get_page(page_num);
-        (page_num, row_offset)
-    }
 
     pub fn num_rows(&self) -> usize {
         self.num_rows
@@ -234,8 +278,10 @@ impl Table {
         if self.num_rows >= TABLE_MAX_ROWS {
             return Err(CommandError::ExecuteTableFull);
         }
-        let (page_num, row_offset) = self.row_slot(self.num_rows);
-        self.pager.set_row(page_num, row_offset, statement.get_row_to_insert());
+        let mut cursor = Cursor::table_start(self);
+        let (page_num, row_offset) = cursor.cursor_value();
+        self.pager
+            .set_row(page_num, row_offset, statement.get_row_to_insert());
         self.num_rows += 1;
         println!(
             "insert successfully {}",
@@ -245,18 +291,22 @@ impl Table {
     }
 
     pub fn select(&mut self, statement: &Statement) -> Result<()> {
-        for i in 0..self.num_rows {
-            let (page_num, row_offset) = self.row_slot(i);
-            let row = self.pager.get_row(page_num, row_offset);
+        let mut cursor = Cursor::table_start(self);
+        while cursor.is_end_of_table() {
+            let (page_num, row_offset) = cursor.cursor_value();
+            let row = cursor.get_row(page_num, row_offset)?;
             println!("{}", row);
+            cursor.cursor_advance();
         }
         Ok(())
     }
 
     pub fn db_close(&mut self) {
-        for i in 0..self.num_rows {
-            let (page_num, row_offset) = self.row_slot(i);
-            self.pager.flush(page_num, row_offset);
+        let mut cursor = Cursor::table_start(self);
+        while !cursor.is_end_of_table() {
+            let (page_num, row_offset) = cursor.cursor_value();
+            cursor.flush(page_num, row_offset);
+            cursor.cursor_advance();
         }
     }
 }
